@@ -21,8 +21,9 @@ import std.logger.core;
 
 mixin(bindGLFW_Vulkan);
 
-private static const uint WIDTH = 800;
-private static const uint HEIGHT = 600;
+private static const uint width = 800;
+private static const uint height = 600;
+private static const uint maxFramesInFlight = 2;
 
 private static const(const char*)[] validationLayers = [
   "VK_LAYER_KHRONOS_validation"
@@ -32,17 +33,14 @@ private static const(const char*)[] deviceExtensions = [
   VK_KHR_SWAPCHAIN_EXTENSION_NAME
 ];
 
-private void assertVk(VkResult result)
-{
+private void assertVk(VkResult result) {
   enforce(result == VK_SUCCESS, "Failed to perform vulkan operation.");
 }
 
 extern (Windows) static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
   VkDebugUtilsMessageTypeFlagsEXT messageType,
-  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) nothrow @nogc
-{
-  final switch (messageSeverity)
-  {
+  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) nothrow @nogc {
+  final switch (messageSeverity) {
   case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:
     fprintf(stderr, "VERBOSE: ");
     break;
@@ -65,57 +63,46 @@ extern (Windows) static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBi
 }
 
 VkResult createDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-  const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
-{
+  const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
   auto func = cast(PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance,
     "vkCreateDebugUtilsMessengerEXT");
 
-  if (func != null)
-  {
+  if (func != null) {
     return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-  }
-  else
-  {
+  } else {
     return VK_ERROR_EXTENSION_NOT_PRESENT;
   }
 }
 
 void destroyDebugUtilsMessengerEXT(VkInstance instance,
-  VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator)
-{
+  VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) {
   auto func = cast(PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance,
     "vkDestroyDebugUtilsMessengerEXT");
 
-  if (func != null)
-  {
+  if (func != null) {
     func(instance, debugMessenger, pAllocator);
   }
 }
 
 // Structs used by HelloTriangleApp
 
-struct QueueFamilyIndices
-{
+struct QueueFamilyIndices {
   Optional!uint graphicsFamily;
   Optional!uint presentFamily;
 
-  bool isComplete()
-  {
+  bool isComplete() {
     return !graphicsFamily.empty && !presentFamily.empty;
   }
 }
 
-struct SwapchainSupportDetails
-{
+struct SwapchainSupportDetails {
   VkSurfaceCapabilitiesKHR capabilities;
   VkSurfaceFormatKHR[] formats;
   VkPresentModeKHR[] presentModes;
 }
 
-final class HelloTriangleApp
-{
-  void run()
-  {
+final class HelloTriangleApp {
+  void run() {
     initWindow();
     initVulkan();
     mainLoop();
@@ -144,32 +131,29 @@ private:
   VkPipeline mGraphicsPipeline;
 
   VkCommandPool mCommandPool;
-  VkCommandBuffer mCommandBuffer;
+  VkCommandBuffer[] mCommandBuffers;
 
-  VkSemaphore mImageAvailableSemaphore;
-  VkSemaphore mRenderFinishedSemaphore;
-  VkFence mInFlightFence;
+  VkSemaphore[] mImageAvailableSemaphores;
+  VkSemaphore[] mRenderFinishedSemaphores;
+  VkFence[] mInFlightFences;
+  uint mCurrentFrame = 0;
 
-  bool loadGLFWLib()
-  {
+  bool frameBufferResized = false;
+
+  bool loadGLFWLib() {
     auto ret = loadGLFW();
     loadGLFW_Vulkan();
 
-    if (ret != glfwSupport)
-    {
+    if (ret != glfwSupport) {
       // Log the error info
-      foreach (info; loader.errors)
-      {
+      foreach (info; loader.errors) {
         writeln("Error loading GLFW: ", info.error);
       }
 
       string msg;
-      if (ret == GLFWSupport.noLibrary)
-      {
+      if (ret == GLFWSupport.noLibrary) {
         msg = "This application requires the GLFW library.";
-      }
-      else
-      {
+      } else {
         msg = "The version of the GLFW library on your system is too low. Please upgrade.";
       }
 
@@ -180,8 +164,7 @@ private:
     return true;
   }
 
-  void initWindow()
-  {
+  void initWindow() {
     enforce(loadGLFWLib(), "Failed to load GLFW shared library.");
     glfwInit();
 
@@ -189,17 +172,21 @@ private:
     enforce(res != GLFW_FALSE, "Vulkan is not supported by GLFW");
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-    mWindow = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", null, null);
+    mWindow = glfwCreateWindow(width, height, "Vulkan", null, null);
+    glfwSetWindowUserPointer(mWindow, &this);
+    glfwSetFramebufferSizeCallback(mWindow, &frameBufferResizedCallback);
   }
 
-  void initVulkan()
-  {
+  static extern (C) void frameBufferResizedCallback(GLFWwindow* window, int width, int height) nothrow @nogc {
+    HelloTriangleApp* app = cast(HelloTriangleApp*) glfwGetWindowUserPointer(window);
+    app.frameBufferResized = true;
+  }
+
+  void initVulkan() {
     import erupted.vulkan_lib_loader;
 
-    if (!loadGlobalLevelFunctions())
-    {
+    if (!loadGlobalLevelFunctions()) {
       throw new Exception("Failed to load global Vulkan Functions!");
     }
 
@@ -214,14 +201,12 @@ private:
     createGraphicsPipeline();
     createFramebuffers();
     createCommandPool();
-    createCommandBuffer();
+    createCommandBuffers();
     createSyncObjects();
   }
 
-  void mainLoop()
-  {
-    while (!glfwWindowShouldClose(mWindow))
-    {
+  void mainLoop() {
+    while (!glfwWindowShouldClose(mWindow)) {
       glfwPollEvents();
       drawFrame();
     }
@@ -229,29 +214,20 @@ private:
     mDevice.DeviceWaitIdle();
   }
 
-  void cleanup()
-  {
-    mDevice.DestroySemaphore(mRenderFinishedSemaphore);
-    mDevice.DestroySemaphore(mImageAvailableSemaphore);
-    mDevice.DestroyFence(mInFlightFence);
-
-    mDevice.DestroyCommandPool(mCommandPool);
-
-    foreach (framebuffer; mSwapchainFramebuffers)
-    {
-      mDevice.DestroyFramebuffer(framebuffer);
-    }
+  void cleanup() {
+    cleanupSwapchain();
 
     mDevice.DestroyPipeline(mGraphicsPipeline);
     mDevice.DestroyPipelineLayout(mPipelineLayout);
     mDevice.DestroyRenderPass(mRenderPass);
 
-    foreach (imageView; mSwapchainImageViews)
-    {
-      mDevice.DestroyImageView(imageView);
+    foreach (i; 0 .. maxFramesInFlight) {
+      mDevice.DestroySemaphore(mRenderFinishedSemaphores[i]);
+      mDevice.DestroySemaphore(mImageAvailableSemaphores[i]);
+      mDevice.DestroyFence(mInFlightFences[i]);
     }
 
-    mDevice.DestroySwapchainKHR(mSwapchain);
+    mDevice.DestroyCommandPool(mCommandPool);
     mDevice.DestroyDevice();
 
     debug destroyDebugUtilsMessengerEXT(mInstance, mDebugMessenger, null);
@@ -259,14 +235,13 @@ private:
     vkDestroySurfaceKHR(mInstance, mSurface, null);
     vkDestroyInstance(mInstance, null);
 
-    assert(freeVulkanLib());
+    enforce(freeVulkanLib());
 
     glfwDestroyWindow(mWindow);
     glfwTerminate();
   }
 
-  void createInstance()
-  {
+  void createInstance() {
     debug assert(checkValidationLayerSupport(), "Validation layers requested, but not available!");
 
     VkApplicationInfo appInfo;
@@ -287,23 +262,19 @@ private:
     createInfo.enabledExtensionCount = cast(uint32_t) requiredExtensions.length;
     createInfo.ppEnabledExtensionNames = requiredExtensions.ptr;
 
-    debug
-    {
+    debug {
       VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo;
       populateDebugMessengerCreateInfo(debugCreateInfo);
       createInfo.pNext = cast(VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
 
       createInfo.enabledLayerCount = cast(uint) validationLayers.length;
       createInfo.ppEnabledLayerNames = validationLayers.ptr;
-    }
-    else
-    {
+    } else {
       createInfo.enabledLayerCount = 0;
       createInfo.pNext = null;
     }
 
-    if (vkCreateInstance(&createInfo, null, &mInstance) != VK_SUCCESS)
-    {
+    if (vkCreateInstance(&createInfo, null, &mInstance) != VK_SUCCESS) {
       writeln("Failed to create Vulkan instance.");
     }
 
@@ -311,8 +282,7 @@ private:
     loadInstanceLevelFunctions(mInstance);
 
     // Show the available extensions in debug mode and setup debug messenger
-    debug
-    {
+    debug {
       uint32_t extension_count = 0;
       vkEnumerateInstanceExtensionProperties(null, &extension_count, null);
 
@@ -320,20 +290,17 @@ private:
       vkEnumerateInstanceExtensionProperties(null, &extension_count, extensions.ptr);
 
       writeln("Extensions: ");
-      foreach (extension; extensions)
-      {
+      foreach (extension; extensions) {
         writeln("\t", extension.extensionName);
       }
     }
   }
 
-  void createSurface()
-  {
+  void createSurface() {
     assertVk(glfwCreateWindowSurface(mInstance, mWindow, null, &mSurface));
   }
 
-  void pickPhysicalDevice()
-  {
+  void pickPhysicalDevice() {
     uint32_t device_count = 0;
     vkEnumeratePhysicalDevices(mInstance, &device_count, null);
 
@@ -342,10 +309,8 @@ private:
     auto devices = new VkPhysicalDevice[device_count];
     vkEnumeratePhysicalDevices(mInstance, &device_count, devices.ptr);
 
-    foreach (ref device; devices)
-    {
-      if (isDeviceSuitable(device))
-      {
+    foreach (ref device; devices) {
+      if (isDeviceSuitable(device)) {
         mPhysicalDevice = device;
         break;
       }
@@ -354,8 +319,7 @@ private:
     enforce(mPhysicalDevice != VK_NULL_HANDLE, "Failed to find a suitable GPU!");
   }
 
-  void createLogicalDevice()
-  {
+  void createLogicalDevice() {
     QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice);
 
     VkDeviceQueueCreateInfo[] queueCreateInfos;
@@ -366,8 +330,7 @@ private:
     // Set queue priority
     float queuePriority = 1.0f;
 
-    foreach (uint32_t queueFamily; uniqueQueueFamilies)
-    {
+    foreach (uint32_t queueFamily; uniqueQueueFamilies) {
       VkDeviceQueueCreateInfo queueCreateInfo;
       queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
       queueCreateInfo.queueFamilyIndex = queueFamily;
@@ -385,13 +348,10 @@ private:
     createInfo.enabledExtensionCount = cast(uint) deviceExtensions.length;
     createInfo.ppEnabledExtensionNames = deviceExtensions.ptr;
 
-    debug
-    {
+    debug {
       createInfo.enabledLayerCount = cast(uint) validationLayers.length;
       createInfo.ppEnabledLayerNames = validationLayers.ptr;
-    }
-    else
-    {
+    } else {
       createInfo.enabledLayerCount = 0;
     }
 
@@ -404,8 +364,7 @@ private:
     mDevice.GetDeviceQueue(indices.presentFamily.front, 0, &mPresentQueue);
   }
 
-  void createSwapchain()
-  {
+  void createSwapchain() {
     SwapchainSupportDetails swapchainSupport = querySwapchainSupport(mPhysicalDevice);
 
     VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapchainSupport.formats);
@@ -414,8 +373,7 @@ private:
 
     uint32_t imageCount = swapchainSupport.capabilities.minImageCount + 1;
     if (swapchainSupport.capabilities.maxImageCount > 0
-      && imageCount > swapchainSupport.capabilities.maxImageCount)
-    {
+      && imageCount > swapchainSupport.capabilities.maxImageCount) {
       imageCount = swapchainSupport.capabilities.maxImageCount;
     }
 
@@ -433,14 +391,11 @@ private:
       indices.graphicsFamily.front, indices.presentFamily.front
     ];
 
-    if (indices.graphicsFamily != indices.presentFamily)
-    {
+    if (indices.graphicsFamily != indices.presentFamily) {
       createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
       createInfo.queueFamilyIndexCount = 2;
       createInfo.pQueueFamilyIndices = queueFamilyIndices.ptr;
-    }
-    else
-    {
+    } else {
       createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
@@ -461,12 +416,10 @@ private:
     mSwapchainExtent = extent;
   }
 
-  void createImageViews()
-  {
+  void createImageViews() {
     mSwapchainImageViews.length = mSwapchainImages.length;
 
-    foreach (i; 0 .. mSwapchainImages.length)
-    {
+    foreach (i; 0 .. mSwapchainImages.length) {
       VkImageViewCreateInfo createInfo;
       createInfo.image = mSwapchainImages[i];
       createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -485,8 +438,7 @@ private:
     }
   }
 
-  void createRenderPass()
-  {
+  void createRenderPass() {
     VkAttachmentDescription colorAttachment;
     colorAttachment.format = mSwapchainImageFormat;
     colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -525,16 +477,14 @@ private:
     assertVk(mDevice.CreateRenderPass(&renderPassInfo, &mRenderPass));
   }
 
-  void createGraphicsPipeline()
-  {
+  void createGraphicsPipeline() {
     const char[] vertShaderCode = cast(char[]) std.file.read("shaders/vert.spv");
     const char[] fragShaderCode = cast(char[]) std.file.read("shaders/frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
-    scope (exit)
-    {
+    scope (exit) {
       mDevice.DestroyShaderModule(fragShaderModule);
       mDevice.DestroyShaderModule(vertShaderModule);
     }
@@ -623,12 +573,10 @@ private:
         &mGraphicsPipeline));
   }
 
-  void createFramebuffers()
-  {
+  void createFramebuffers() {
     mSwapchainFramebuffers.length = mSwapchainImageViews.length;
 
-    foreach (i; 0 .. mSwapchainImageViews.length)
-    {
+    foreach (i; 0 .. mSwapchainImageViews.length) {
       VkImageView[] attachments = [mSwapchainImageViews[i]];
 
       VkFramebufferCreateInfo framebufferInfo;
@@ -643,8 +591,7 @@ private:
     }
   }
 
-  void createCommandPool()
-  {
+  void createCommandPool() {
     QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice);
 
     VkCommandPoolCreateInfo poolInfo;
@@ -654,18 +601,18 @@ private:
     assertVk(mDevice.CreateCommandPool(&poolInfo, &mCommandPool));
   }
 
-  void createCommandBuffer()
-  {
+  void createCommandBuffers() {
+    mCommandBuffers.length = maxFramesInFlight;
+
     VkCommandBufferAllocateInfo allocInfo;
     allocInfo.commandPool = mCommandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
+    allocInfo.commandBufferCount = cast(uint) mCommandBuffers.length;
 
-    assertVk(mDevice.AllocateCommandBuffers(&allocInfo, &mCommandBuffer));
+    assertVk(mDevice.AllocateCommandBuffers(&allocInfo, mCommandBuffers.ptr));
   }
 
-  void recordCommandBuffer(uint32_t imageIndex)
-  {
+  void recordCommandBuffer(uint32_t imageIndex) {
     VkCommandBufferBeginInfo beginInfo;
 
     assertVk(mDevice.BeginCommandBuffer(&beginInfo));
@@ -703,34 +650,44 @@ private:
     assertVk(mDevice.EndCommandBuffer());
   }
 
-  void createSyncObjects()
-  {
+  void createSyncObjects() {
+    mImageAvailableSemaphores.length = maxFramesInFlight;
+    mRenderFinishedSemaphores.length = maxFramesInFlight;
+    mInFlightFences.length = maxFramesInFlight;
+
     VkSemaphoreCreateInfo semaphoreInfo;
     VkFenceCreateInfo fenceInfo;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    assertVk(mDevice.CreateSemaphore(&semaphoreInfo, &mImageAvailableSemaphore));
-    assertVk(mDevice.CreateSemaphore(&semaphoreInfo, &mRenderFinishedSemaphore));
-    assertVk(mDevice.CreateFence(&fenceInfo, &mInFlightFence));
+    foreach (i; 0 .. maxFramesInFlight) {
+      assertVk(mDevice.CreateSemaphore(&semaphoreInfo, &mImageAvailableSemaphores[i]));
+      assertVk(mDevice.CreateSemaphore(&semaphoreInfo, &mRenderFinishedSemaphores[i]));
+      assertVk(mDevice.CreateFence(&fenceInfo, &mInFlightFences[i]));
+    }
   }
 
-  void drawFrame()
-  {
-    mDevice.WaitForFences(1, &mInFlightFence, VK_TRUE, uint64_t.max);
-    mDevice.ResetFences(1, &mInFlightFence);
+  void drawFrame() {
+    mDevice.WaitForFences(1, &mInFlightFences[mCurrentFrame], VK_TRUE, uint64_t.max);
+    mDevice.ResetFences(1, &mInFlightFences[mCurrentFrame]);
 
     uint32_t imageIndex;
     VkResult result = mDevice.AcquireNextImageKHR(mSwapchain, uint64_t.max,
-      mImageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+      mImageAvailableSemaphores[mCurrentFrame], VK_NULL_HANDLE, &imageIndex);
 
-    assertVk(result);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+      recreateSwapchain();
+      return;
+    } else {
+      enforce(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR,
+        "Failed to acquire swapchain image!");
+    }
 
-    mDevice.commandBuffer = mCommandBuffer;
+    mDevice.commandBuffer = mCommandBuffers[mCurrentFrame];
     mDevice.ResetCommandBuffer(0);
     recordCommandBuffer(imageIndex);
 
     VkSubmitInfo submitInfo;
-    VkSemaphore[] waitSemaphores = [mImageAvailableSemaphore];
+    VkSemaphore[] waitSemaphores = [mImageAvailableSemaphores[mCurrentFrame]];
     VkPipelineStageFlags[] waitStages = [
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
     ];
@@ -740,13 +697,13 @@ private:
     submitInfo.pWaitDstStageMask = waitStages.ptr;
 
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &mCommandBuffer;
+    submitInfo.pCommandBuffers = &mCommandBuffers[mCurrentFrame];
 
-    VkSemaphore[] signalSemaphores = [mRenderFinishedSemaphore];
+    VkSemaphore[] signalSemaphores = [mRenderFinishedSemaphores[mCurrentFrame]];
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores.ptr;
 
-    assertVk(vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFence));
+    assertVk(vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFences[mCurrentFrame]));
 
     VkPresentInfoKHR presentInfo;
     presentInfo.waitSemaphoreCount = 1;
@@ -757,11 +714,46 @@ private:
     presentInfo.pSwapchains = swapchains.ptr;
     presentInfo.pImageIndices = &imageIndex;
 
-    assertVk(vkQueuePresentKHR(mPresentQueue, &presentInfo));
+    result = vkQueuePresentKHR(mPresentQueue, &presentInfo);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || frameBufferResized) {
+      frameBufferResized = false;
+      recreateSwapchain();
+    } else {
+      assertVk(result);
+    }
+
+    mCurrentFrame = (mCurrentFrame + 1) % maxFramesInFlight;
   }
 
-  VkShaderModule createShaderModule(const ref char[] code)
-  {
+  void cleanupSwapchain() {
+    foreach (ref framebuffer; mSwapchainFramebuffers)
+      mDevice.DestroyFramebuffer(framebuffer);
+
+    foreach (ref imageView; mSwapchainImageViews)
+      mDevice.DestroyImageView(imageView);
+
+    mDevice.DestroySwapchainKHR(mSwapchain);
+  }
+
+  void recreateSwapchain() {
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(mWindow, &width, &height);
+    while (width == 0 || height == 0) {
+      glfwGetFramebufferSize(mWindow, &width, &height);
+      glfwWaitEvents();
+    }
+
+    mDevice.DeviceWaitIdle();
+
+    cleanupSwapchain();
+
+    createSwapchain();
+    createImageViews();
+    createFramebuffers();
+  }
+
+  VkShaderModule createShaderModule(const ref char[] code) {
     VkShaderModuleCreateInfo createInfo;
     createInfo.codeSize = code.length;
     createInfo.pCode = cast(uint*) code.ptr;
@@ -772,13 +764,10 @@ private:
     return shaderModule;
   }
 
-  VkSurfaceFormatKHR chooseSwapSurfaceFormat(const ref VkSurfaceFormatKHR[] availableFormats)
-  {
-    foreach (const ref availableFormat; availableFormats)
-    {
+  VkSurfaceFormatKHR chooseSwapSurfaceFormat(const ref VkSurfaceFormatKHR[] availableFormats) {
+    foreach (const ref availableFormat; availableFormats) {
       if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB
-        && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-      {
+        && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
         return availableFormat;
       }
     }
@@ -786,12 +775,9 @@ private:
     return availableFormats[0];
   }
 
-  VkPresentModeKHR chooseSwapPresentMode(const ref VkPresentModeKHR[] availablePresentModes)
-  {
-    foreach (const ref availablePresentMode; availablePresentModes)
-    {
-      if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR)
-      {
+  VkPresentModeKHR chooseSwapPresentMode(const ref VkPresentModeKHR[] availablePresentModes) {
+    foreach (const ref availablePresentMode; availablePresentModes) {
+      if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
         return availablePresentMode;
       }
     }
@@ -799,10 +785,8 @@ private:
     return VK_PRESENT_MODE_FIFO_KHR;
   }
 
-  VkExtent2D chooseSwapExtent(const ref VkSurfaceCapabilitiesKHR capabilities)
-  {
-    if (capabilities.currentExtent.width != uint32_t.max)
-    {
+  VkExtent2D chooseSwapExtent(const ref VkSurfaceCapabilitiesKHR capabilities) {
+    if (capabilities.currentExtent.width != uint32_t.max) {
       return capabilities.currentExtent;
     }
 
@@ -819,8 +803,7 @@ private:
     return actualExtent;
   }
 
-  SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device)
-  {
+  SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device) {
     SwapchainSupportDetails details;
 
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, mSurface, &details.capabilities);
@@ -828,8 +811,7 @@ private:
     uint32_t formatCount;
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, mSurface, &formatCount, null);
 
-    if (formatCount != 0)
-    {
+    if (formatCount != 0) {
       details.formats.length = formatCount;
       vkGetPhysicalDeviceSurfaceFormatsKHR(device, mSurface, &formatCount, details.formats.ptr);
     }
@@ -837,8 +819,7 @@ private:
     uint32_t presentModeCount;
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, mSurface, &presentModeCount, null);
 
-    if (presentModeCount != 0)
-    {
+    if (presentModeCount != 0) {
       details.presentModes.length = formatCount;
       vkGetPhysicalDeviceSurfacePresentModesKHR(device, mSurface,
         &presentModeCount, details.presentModes.ptr);
@@ -847,14 +828,12 @@ private:
     return details;
   }
 
-  bool isDeviceSuitable(VkPhysicalDevice device)
-  {
+  bool isDeviceSuitable(VkPhysicalDevice device) {
     QueueFamilyIndices indices = findQueueFamilies(device);
     bool extensionsSupported = checkDeviceExtensionSupport(device);
     bool swapchainAdequate = false;
 
-    if (extensionsSupported)
-    {
+    if (extensionsSupported) {
       SwapchainSupportDetails swapchainSupport = querySwapchainSupport(device);
       swapchainAdequate = swapchainSupport.formats.length > 0
         && swapchainSupport.presentModes.length > 0;
@@ -863,8 +842,7 @@ private:
     return indices.isComplete && extensionsSupported && swapchainAdequate;
   }
 
-  bool checkDeviceExtensionSupport(VkPhysicalDevice device)
-  {
+  bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     uint32_t extensionCount;
     vkEnumerateDeviceExtensionProperties(device, null, &extensionCount, null);
 
@@ -872,16 +850,14 @@ private:
     vkEnumerateDeviceExtensionProperties(device, null, &extensionCount, availableExtensions.ptr);
 
     auto requiredExtensions = redBlackTree!(strcmp, const char*)(deviceExtensions);
-    foreach (VkExtensionProperties availableExtension; availableExtensions)
-    {
+    foreach (VkExtensionProperties availableExtension; availableExtensions) {
       requiredExtensions.removeKey(toStringz(availableExtension.extensionName));
     }
 
     return requiredExtensions.empty;
   }
 
-  QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device)
-  {
+  QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
     QueueFamilyIndices indices;
 
     uint32_t queueFamilyCount;
@@ -890,8 +866,7 @@ private:
     VkQueueFamilyProperties[] queueFamilies = new VkQueueFamilyProperties[](queueFamilyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.ptr);
 
-    foreach (i, queueFamily; queueFamilies)
-    {
+    foreach (i, queueFamily; queueFamilies) {
       if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
         indices.graphicsFamily = cast(uint) i;
 
@@ -908,30 +883,24 @@ private:
     return indices;
   }
 
-  debug
-  {
-    bool checkValidationLayerSupport()
-    {
+  debug {
+    bool checkValidationLayerSupport() {
       uint32_t layer_count;
       vkEnumerateInstanceLayerProperties(&layer_count, null);
 
       VkLayerProperties[] available_layers = new VkLayerProperties[layer_count];
       vkEnumerateInstanceLayerProperties(&layer_count, available_layers.ptr);
 
-      foreach (const ref layer_name; validationLayers)
-      {
+      foreach (const ref layer_name; validationLayers) {
         bool layer_found = false;
-        foreach (const ref layer_property; available_layers)
-        {
-          if (strcmp(layer_name, toStringz(layer_property.layerName)) == 0)
-          {
+        foreach (const ref layer_property; available_layers) {
+          if (strcmp(layer_name, toStringz(layer_property.layerName)) == 0) {
             layer_found = true;
             break;
           }
         }
 
-        if (!layer_found)
-        {
+        if (!layer_found) {
           return false;
         }
       }
@@ -939,8 +908,7 @@ private:
       return true;
     }
 
-    void populateDebugMessengerCreateInfo(ref VkDebugUtilsMessengerCreateInfoEXT createInfo)
-    {
+    void populateDebugMessengerCreateInfo(ref VkDebugUtilsMessengerCreateInfoEXT createInfo) {
       // Reset the struct
       createInfo = VkDebugUtilsMessengerCreateInfoEXT();
 
@@ -956,8 +924,7 @@ private:
       createInfo.pUserData = null;
     }
 
-    void setupDebugMessenger()
-    {
+    void setupDebugMessenger() {
       VkDebugUtilsMessengerCreateInfoEXT createInfo;
       populateDebugMessengerCreateInfo(createInfo);
 
@@ -966,8 +933,7 @@ private:
   }
 }
 
-const(char*)[] getRequiredExtensions()
-{
+const(char*)[] getRequiredExtensions() {
   uint32_t glfwExtensionCount = 0;
   const(char*)* glfwExtensions;
   glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
