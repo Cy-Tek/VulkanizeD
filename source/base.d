@@ -37,7 +37,7 @@ private void assertVk(VkResult result) {
   enforce(result == VK_SUCCESS, "Failed to perform vulkan operation.");
 }
 
-extern (Windows) static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+extern (System) static VkBool32 debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
   VkDebugUtilsMessageTypeFlagsEXT messageType,
   const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) nothrow @nogc {
   final switch (messageSeverity) {
@@ -885,16 +885,16 @@ private:
 
   debug {
     bool checkValidationLayerSupport() {
-      uint32_t layer_count;
-      vkEnumerateInstanceLayerProperties(&layer_count, null);
+      uint32_t layerCount;
+      vkEnumerateInstanceLayerProperties(&layerCount, null);
 
-      VkLayerProperties[] available_layers = new VkLayerProperties[layer_count];
-      vkEnumerateInstanceLayerProperties(&layer_count, available_layers.ptr);
+      VkLayerProperties[] availableLayers = new VkLayerProperties[layerCount];
+      vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.ptr);
 
-      foreach (const ref layer_name; validationLayers) {
+      foreach (const ref layerName; validationLayers) {
         bool layer_found = false;
-        foreach (const ref layer_property; available_layers) {
-          if (strcmp(layer_name, toStringz(layer_property.layerName)) == 0) {
+        foreach (const ref layer_property; availableLayers) {
+          if (strcmp(layerName, toStringz(layer_property.layerName)) == 0) {
             layer_found = true;
             break;
           }
