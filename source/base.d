@@ -6,6 +6,7 @@ import std.container.rbtree;
 import std.range;
 import std.algorithm.iteration;
 import std.string;
+import std.logger.core;
 import core.stdc.stdio : fprintf, stderr;
 import core.stdc.string : strcmp;
 
@@ -15,9 +16,11 @@ import erupted.vulkan_lib_loader;
 
 import bindbc.glfw;
 import loader = bindbc.loader.sharedlib;
+
+import gl3n.linalg;
+
 import optional;
 import utils;
-import std.logger.core;
 
 mixin(bindGLFW_Vulkan);
 
@@ -101,6 +104,43 @@ struct SwapchainSupportDetails {
   VkPresentModeKHR[] presentModes;
 }
 
+struct Vertex {
+  vec2 position;
+  vec3 color;
+
+  static VkVertexInputBindingDescription getBindingDescription() {
+    VkVertexInputBindingDescription bindingDescription;
+    bindingDescription.binding = 0;
+    bindingDescription.stride = Vertex.sizeof;
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    return bindingDescription;
+  }
+
+  static VkVertexInputAttributeDescription[2] getAttributeDescriptions() {
+    VkVertexInputAttributeDescription[2] attributeDescriptions;
+
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].offset = Vertex.position.offsetof;
+
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[1].offset = Vertex.color.offsetof; // TODO Make sure this works!
+
+    writeln("Color Offset: ", Vertex.color.offsetof);
+    return attributeDescriptions;
+  }
+}
+
+private immutable Vertex[] vertices = [
+  {vec2(0.0f, -0.5f), vec3(1.0f, 0.0f, 0.0f)},
+  {vec2(0.5f, 0.5f), vec3(0.0f, 1.0f, 0.0f)},
+  {vec2(-0.5, 0.5f), vec3(0.0f, 0.0f, 1.0f)},
+];
+
 final class HelloTriangleApp {
   void run() {
     initWindow();
@@ -137,6 +177,9 @@ private:
   VkSemaphore[] mRenderFinishedSemaphores;
   VkFence[] mInFlightFences;
   uint mCurrentFrame = 0;
+
+  VkBuffer mVertexBuffer;
+  VkDeviceMemory mVertexBufferMemory;
 
   bool frameBufferResized = false;
 
@@ -201,6 +244,7 @@ private:
     createGraphicsPipeline();
     createFramebuffers();
     createCommandPool();
+    createVertexBuffer();
     createCommandBuffers();
     createSyncObjects();
   }
@@ -216,6 +260,9 @@ private:
 
   void cleanup() {
     cleanupSwapchain();
+
+    mDevice.DestroyBuffer(mVertexBuffer);
+    mDevice.FreeMemory(mVertexBufferMemory);
 
     mDevice.DestroyPipeline(mGraphicsPipeline);
     mDevice.DestroyPipelineLayout(mPipelineLayout);
@@ -601,6 +648,26 @@ private:
     assertVk(mDevice.CreateCommandPool(&poolInfo, &mCommandPool));
   }
 
+  void createVertexBuffer() {
+    VkBufferCreateInfo bufferInfo;
+    bufferInfo.size = vertices[0].sizeof * vertices.length;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    assertVk(mDevice.CreateBuffer(&bufferInfo, &mVertexBuffer));
+
+    VkMemoryRequirements memRequirements;
+    mDevice.GetBufferMemoryRequirements(mVertexBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    assertVk(mDevice.AllocateMemory(&allocInfo, &mVertexBufferMemory));
+    mDevice.BindBufferMemory(mVertexBuffer, mVertexBufferMemory, 0);
+  }
+
   void createCommandBuffers() {
     mCommandBuffers.length = maxFramesInFlight;
 
@@ -751,6 +818,20 @@ private:
     createSwapchain();
     createImageViews();
     createFramebuffers();
+  }
+
+  uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &memProperties);
+
+    foreach (uint32_t i; 0 .. memProperties.memoryTypeCount) {
+      if (typeFilter & (1 << 1)
+        && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+        return i;
+      }
+    }
+
+    throw new Exception("Failed to find suitable memory type!");
   }
 
   VkShaderModule createShaderModule(const ref char[] code) {
